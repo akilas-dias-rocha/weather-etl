@@ -1,10 +1,10 @@
 from airflow.decorators import dag, task
 from airflow.models import Variable
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from pendulum import datetime
 
 import requests
-import os
-import pandas as pd
 
 
 @dag(
@@ -22,7 +22,6 @@ def weather_etl():
         Extracts weather data from the WeatherAPI for a specific location
         and returns the JSON response.
         """
-                    
         weather_api_key = Variable.get("api_key")
         base_url = "http://api.weatherapi.com/v1"
         complete_url = f"{base_url}/forecast.json"
@@ -48,7 +47,6 @@ def weather_etl():
         """
         Transforms the weather data into a pandas DataFrame.
         """
-
         if weather_data is None:
             print("No data to transform.")
             return []
@@ -73,32 +71,52 @@ def weather_etl():
         }
         return [transformed_data]
 
+    create_weather_table = SQLExecuteQueryOperator(
+        task_id="create_weather_table",
+        conn_id="postgres_default",
+        sql="sql/weather_table_ddl.sql",
+    )
+
     @task()
-    def load_weather_data(data: list = None, **context):
+    def load_weather_data(data: list = None):
         """
-        Loads the transformed weather data into a CSV file.
+        Loads the transformed weather data into a Postgres database.
         """
         if not data:
             raise ValueError("No data to load.")
 
-        df = pd.DataFrame(data)
+        table_name = "weather_data"
+        target_fields = [
+            "name",
+            "region",
+            "country",
+            "tz_id",
+            "localtime",
+            "date",
+            "last_updated",
+            "condition",
+            "maxtemp_c",
+            "mintemp_c",
+            "avgtemp_c",
+            "chance_of_rain",
+        ]
 
-        try:
-            output_dir = "weather_files"
-            os.makedirs(output_dir, exist_ok=True)
-            file_date = context['logical_date'].strftime("%Y%m%d")
-            file_name = f"weather_data_{file_date}.csv"
-            output_path = os.path.join(output_dir, file_name)
-            df.to_csv(output_path, index=False)
-            print(f"Weather data loaded successfully to {output_path}")
-        except Exception as e:
-            print(f"Error loading weather data: {e}")
-            raise
+        rows = [[row[col] for col in target_fields] for row in data]
 
-    # Define task dependencies with data passing
+        postgres_hook = PostgresHook(postgres_conn_id="postgres_default")
+        postgres_hook.insert_rows(
+            table=table_name,
+            rows=rows,
+            target_fields=target_fields,
+        )
+        print(f"Loaded {len(rows)} rows into {table_name}.")
+
     extract_output = extract_weather_data()
     transform_output = transform_weather_data(extract_output)
+    create_weather_table_task = create_weather_table
     load_all_data = load_weather_data(transform_output)
 
-# Instantiate the DAG
+    create_weather_table_task >> load_all_data
+
+
 weather_etl()
