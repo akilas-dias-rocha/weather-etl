@@ -1,0 +1,4 @@
+version: "3.8"
+x-airflow-common:
+  volumes:
+    - ./weather_files:/usr/local/airflow/weather_files
