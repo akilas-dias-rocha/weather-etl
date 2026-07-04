@@ -37,8 +37,8 @@ def weather_etl():
         r = requests.get(complete_url, params=params, timeout=10)
 
         if r.status_code != 200:
-            print(f"Error fetching weather data: {r.status_code}")
-            return None
+            raise ValueError(f"Error fetching weather data: {r.status_code}")
+
         else:
             return r.json()
 
@@ -101,22 +101,24 @@ def weather_etl():
             "chance_of_rain",
         ]
 
+        reserved = {"localtime", "date", "condition"}
+        quoted_columns = [f'"{col}"' if col in reserved else col for col in target_fields]
+
         rows = [[row[col] for col in target_fields] for row in data]
 
         postgres_hook = PostgresHook(postgres_conn_id="postgres_default")
         postgres_hook.insert_rows(
             table=table_name,
             rows=rows,
-            target_fields=target_fields,
+            replace=True,
+            replace_index=["name", "date"],
+            target_fields=quoted_columns,
         )
         print(f"Loaded {len(rows)} rows into {table_name}.")
 
     extract_output = extract_weather_data()
     transform_output = transform_weather_data(extract_output)
-    create_weather_table_task = create_weather_table
-    load_all_data = load_weather_data(transform_output)
-
-    create_weather_table_task >> load_all_data
+    create_weather_table >> load_weather_data(transform_output)
 
 
 weather_etl()
